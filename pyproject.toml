@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "align-factor-stitch"
+version = "0.0.1"
+description = "A Python tool for blind image stitching"
+authors = [
+    { name = "Pierre Thibault"},
+    { name = "Benedikt J. Daurer"},
+]
+license = { file = "LICENSE"}
+readme = "README.md"
+keywords = ["stitching", "flatfield", "near-field ptychography", "imaging"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+requires-python = ">= 3.8"
+dependencies = [
+    "numpy",
+    "scipy",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/optimato/align-factor-stitch"
+"Bug Tracker" = "https://github.com/optimato/align-factor-stitch/issues"
+
