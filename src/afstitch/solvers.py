@@ -2,7 +2,9 @@
 
 
 """
+from .utils import reshape_to_view, match
 
+import numpy as np
 
 class AlignFactorStitch():
     """
@@ -34,15 +36,28 @@ class AlignFactorStitch():
         self._shifts = None
         self._scalar = None
         self._mask = None
-        
+
+        # stitched image
+        self._img = None
+        self._img_renorm = None
+        self._img_mask = None
+
+        # properties
         self.images = images
         self.shifts = shifts
         self.scalar = scalar
         self.mask = mask
+        
+        self.initialize()
 
     @property
+    def stitched(self):
+        if self._img is not None:
+            return self._img
+        
+    @property
     def shifts(self):
-        return self._shifts
+        return self._shifts + self._offset
 
     @shifts.setter
     def shifts(self, val):
@@ -66,6 +81,7 @@ class AlignFactorStitch():
         else:
             assert (val.shape) == (self.fsh), "Provided scalar image should have shape {}".format(self.fsh)
             self._scalar = val
+        self._scalar_renorm = np.zeros_like(self._scalar)
 
     @property
     def mask(self):
@@ -87,37 +103,53 @@ class AlignFactorStitch():
             # mask = np.abs(f - mf) < mask_threshold * exp_time
             # masks = N * [mask]
         else:
-            assert (val.shape == self.images.shape) or , 
             if (val.shape == self.images.shape):
                 self._mask = np.asarray(val)
             elif (val.shape == self.fsh):
-                self._mask = N * [np.asarray(val)]
+                self._mask = self.n * [np.asarray(val)]
             else:
                 raise RuntimeError("Invalid mask shape")
             # Create frame mask
             self._m0= np.zeros_like(self._mask[0])
             self._m0[self._crop:-self._crop, self._crop:-self._crop] = 1.
-
-    
-    def refine_shifts(self, ref, ref_mask, max_shift):
-        """
-
-        """
-        for i in range(self.n):
-            result = match(Ib=ref, It=self.images[i], Ifact=self._scalar,
-                           mb = ref_mask, mt= self._mo * self._mask[i], scale=False, max_shift=max_shift)
-            self._shifts[i] += np.round(result["r"]).astype(int)
         
-    def refine_image(self, img, img_renorm):
-        img *= 1e-6
-        img_renorm.fill(1e-6)
+    def _refine_image(self):
+        if self._img is None:
+            return
+        self._img *= 1e-6
+        self._img_renorm.fill(1e-6)
         for i in range(self.n):
             i0, i1 = self._shifts[i]
-            img[i0:i0 + self.fsh[0], i1:i1 + self.fsh[1]] += self.mask[i] * self.images[i] * self._scalar
-            img_renorm[i0:i0 + self.fsh[0], i1:i1 + self.fsh[1]] += self.mask[i] * self._scalar ** 2
-        img_mask = img_renorm > 1e-5
-        img /= img_renorm + ~img_mask
-        return img, img_mask
+            self._img[i0:i0 + self.fsh[0], i1:i1 + self.fsh[1]] += self.mask[i] * self.images[i] * self._scalar
+            self._img_renorm[i0:i0 + self.fsh[0], i1:i1 + self.fsh[1]] += self.mask[i] * self._scalar ** 2
+        self._img_mask = (self._img_renorm != 0)#self._img_renorm > 1e-5
+        self._img /= self._img_renorm + ~self._img_mask
+
+    def _refine_scalar(self):
+        for i in range(self.n):
+            i0, i1 = self._shifts[i]
+            self._scalar += self._mask[i] * self.images[i] * self._img[i0:i0 + self.fsh[0], i1:i1 + self.fsh[1]]
+            self._scalar_renorm += self.mask[i] * self._img[i0:i0 + self.fsh[0], i1:i1 + self.fsh[1]] ** 2
+        self._scalar /= self._scalar_renorm
+
+    def initialize(self):
+        """
+
+        """
+        # Initial alignment based on one frame as a reference
+        if not self._shifts_initialized:
+            ref_img = self.images[0] / self._scalar
+            for i in range(self.n):
+                result = match(Ib=ref_img, It=self.images[i], Ifact=self._scalar,
+                               mb=self._m0 * self._mask[0], mt=self._m0 * self._mask[i],
+                               scale=False, max_shift=max_shift)
+                self._shifts[i] += np.round(result["r"]).astype(int)
+
+        # Initial estimate for image
+        self._img, self._shifts, new_offset = reshape_to_view(np.zeros((10, 10)), self._shifts, self.fsh)
+        self._offset += new_offset
+        self._img_renorm = self._img.copy()
+        self._refine_image()
 
     def solve(self, refine_scalar=True, max_iter=50, max_shift=None):
         """
@@ -130,21 +162,7 @@ class AlignFactorStitch():
             max_shift = 300
             auto_max_shift = True
 
-        # Initial alignment based on one frame as a reference
-        if not self._shifts_initialized:
-            ref_img = self._images[0] / self._scalar
-            self.refine_shifts(ref_img, self._m0 * self._mask[0], max_shift)
-
-        # Initial estimate for image
-        image, self._shifts, new_offset = reshape_array(np.zeros((10, 10)), self._shifts, self.fsh)
-        self._offset += new_offset
-        image_renorm = image.copy()
-        image, image_renorm = self.refine_image(image, image_renorm)
-
-        # Iteratively refine img and f
-        scalar_renorm = np.zeros_like(self._scalar)
-
-        # TODO: maybe provide a mask for flat as well
+        # # TODO: maybe provide a mask for flat as well
         scalar_mask = np.ones_like(self.mask[0])
         for m in self.mask:
             scalar_mask &= m
@@ -154,44 +172,42 @@ class AlignFactorStitch():
         if auto_max_shift:
             max_shift = 2 * (self._shifts.max(axis=0) - self._shifts.min(axis=0)).max()
     
-        refine_pos = True
+        refine_shifts = True
         for ii in range(max_iter):
 
             # Find f
             if refine_scalar:
                 #fbefore = f.copy()
                 self._scalar *= 1e-6
-                scalar_renorm.fill(1e-6)
+                self._scalar_renorm.fill(1e-6)
+                # BD: is this necessary? here flat is the user-provided scalar image
                 if self._scalar is not None:
-                    f += fmask * alpha * flat
-                    f_renorm += alpha * fmask
-                for i in range(N):
-                    i0, i1 = positions[i]
-                    f += masks[i] * frames[i] * img[i0:i0 + fsh[0], i1:i1 + fsh[1]]
-                    f_renorm += masks[i] * img[i0:i0 + fsh[0], i1:i1 + fsh[1]] ** 2
-                    f /= f_renorm
-                    # print ii, (np.abs(f-fbefore)**2).sum()
-                    # Here implement some breaking criterion
+                    self._scalar += scalar_mask * self._alpha * self._scalar
+                    self._scalar_renorm += self._alpha * scalar_mask
+                self._refine_scalar()
+                # print ii, (np.abs(f-fbefore)**2).sum()
+                # Here implement some breaking criterion
 
             # Find img
-            self.refine_image(self, img, img_renorm)
+            self._refine_image()
             
             # Refine positions
-            if refine_pos:
-                # This filter is needed to avoid matching noise.
-                # Not clear yet what is the optimal sigma.
-                #img = gaussian_filter(img, 10.)
-
-                old_shifts = self._shifts.copy()
-                self.refine_shifts(image[i0:i0 + self.fsh[0], i1:i1 + self.fsh[1]],
-                                   img_mask[i0:i0 + self.fsh[0], i1:i1 + self.fsh[1]], max_shift)
-                if np.all(old_shifts == self._shifts):
+            if refine_shifts:
+                prev_shifts = self._shifts.copy()
+                for i in range(self.n):
+                    i0,i1 = self._shifts[i]
+                    result = match(Ib=self._img[i0:i0 + self.fsh[0], i1:i1 + self.fsh[1]],
+                                   It=self.images[i], Ifact=self._scalar,
+                                   mb=self._img_mask[i0:i0 + self.fsh[0], i1:i1 + self.fsh[1]],
+                                   mt=self._m0 * self._mask[i],
+                                   scale=False, max_shift=max_shift)
+                    self._shifts[i] += np.round(result["r"]).astype(int)
+                if np.all(prev_shifts == self._shifts):
                     # Convergence
-                    refine_pos = False
+                    refine_shifts = False
                 else:
-                    img, self._shifts, new_offset = reshape_array(image, self._shifts, self.fsh)
+                    self._img, self._shifts, new_offset = reshape_to_view(self._img, self._shifts, self.fsh)
                     self._offset += new_offset
-                    img_renorm = reshape_array(image_renorm, self._shifts, self.fsh)[0]
-                    img_mask = reshape_array(img_mask, self._shifts, self.fsh)[0]
-        return image, self._scalar, self._shifts + self._offset
+                    self._img_renorm = reshape_to_view(self._img_renorm, self._shifts, self.fsh)[0]
+                    self._img_mask = reshape_to_view(self._img_mask, self._shifts, self.fsh)[0]
 

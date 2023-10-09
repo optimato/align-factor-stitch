@@ -37,7 +37,7 @@ def reshape_to_view(a, shifts, shape):
     """
 
     # Calculate new shifts and offset
-    shifts = np.asarray(shifts)
+    shifts = np.asarray(shifts, dtype=int)
     min0, min1 = shifts.min(axis=0)
     max0, max1 = shifts.max(axis=0) + shape
     shifts_new = shifts - (min0, min1)
