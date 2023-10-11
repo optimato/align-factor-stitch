@@ -11,7 +11,7 @@ class AlignFactorStitch():
 
 
     """
-    def __init__(self, images, shifts=None, scalar=None, mask=None, crop=0.1):
+    def __init__(self, images, shifts=None, scalar=None, mask=None, crop=0.1, max_shift=None):
         """
         
         An iterative solver to align, factor and stitch a stack of N images each of shape (X,Y).
@@ -26,6 +26,9 @@ class AlignFactorStitch():
         :type mask: 2d array of shape (X,Y) or 3d array of shape (N,X,Y)
         :param crop: Percentage to be cropped at the edges, default is 10 percent.
         :type crop: int
+        :param max_shift: Maximum shift in pixels, if None the maximum is set initially to 300 pixles 
+                          and then twice the current shifts for each of the iterations of the solver
+        :type max_shift: int
 
         """
         self.n = len(images)
@@ -47,6 +50,13 @@ class AlignFactorStitch():
         self.shifts = shifts
         self.scalar = scalar
         self.mask = mask
+
+        # Automatic determination of max_shift
+        self.auto_max_shift = False
+        if max_shift is None:
+            max_shift = 300
+            self.auto_max_shift = True
+        self.max_shift = max_shift
         
         self.initialize()
 
@@ -142,7 +152,7 @@ class AlignFactorStitch():
             for i in range(self.n):
                 result = match(Ib=ref_img, It=self.images[i], Ifact=self._scalar,
                                mb=self._m0 * self._mask[0], mt=self._m0 * self._mask[i],
-                               scale=False, max_shift=max_shift)
+                               scale=False, max_shift=self.max_shift)
                 self._shifts[i] += np.round(result["r"]).astype(int)
 
         # Initial estimate for image
@@ -151,16 +161,10 @@ class AlignFactorStitch():
         self._img_renorm = self._img.copy()
         self._refine_image()
 
-    def solve(self, refine_scalar=True, max_iter=50, max_shift=None):
+    def solve(self, refine_scalar=True, max_iter=50):
         """
 
         """
-
-        # Automatic determination of max_shift
-        auto_max_shift = False
-        if max_shift is None:
-            max_shift = 300
-            auto_max_shift = True
 
         # # TODO: maybe provide a mask for flat as well
         scalar_mask = np.ones_like(self.mask[0])
@@ -169,7 +173,7 @@ class AlignFactorStitch():
 
         # TODO: This is an assumption that needs to be documented:
         # The allowed maximum shift in cross-correlation fitting is twice the current shifts
-        if auto_max_shift:
+        if self.auto_max_shift:
             max_shift = 2 * (self._shifts.max(axis=0) - self._shifts.min(axis=0)).max()
     
         refine_shifts = True
@@ -200,7 +204,7 @@ class AlignFactorStitch():
                                    It=self.images[i], Ifact=self._scalar,
                                    mb=self._img_mask[i0:i0 + self.fsh[0], i1:i1 + self.fsh[1]],
                                    mt=self._m0 * self._mask[i],
-                                   scale=False, max_shift=max_shift)
+                                   scale=False, max_shift=self.max_shift)
                     self._shifts[i] += np.round(result["r"]).astype(int)
                 if np.all(prev_shifts == self._shifts):
                     # Convergence
